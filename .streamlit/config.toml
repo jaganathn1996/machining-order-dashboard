@@ -1,0 +1,19 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+runOnSave = true
+
+[theme]
+base = "light"
+primaryColor = "#C47B2B"
+backgroundColor = "#F3F5F7"
+secondaryBackgroundColor = "#E6EBF0"
+textColor = "#1C2834"
+font = "sans serif"
+
+[theme.sidebar]
+backgroundColor = "#13293D"
+secondaryBackgroundColor = "#1C3B56"
+textColor = "#E7EEF5"
+primaryColor = "#E0A04A"
