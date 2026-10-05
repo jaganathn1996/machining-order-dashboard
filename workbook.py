@@ -44,14 +44,16 @@ EDITOR_COLUMNS = [
     "Completed Status",
     "RMA Status",
     "Is Aerospace Order",
+    "Cost",
 ]
 TEXT_COLUMNS = [
     column
     for column in EDITOR_COLUMNS
-    if column not in {"PO Date", "Dispatch Date", "Qty", "Action Qty"}
+    if column not in {"PO Date", "Dispatch Date", "Qty", "Action Qty", "Cost"}
 ]
 DATE_COLUMNS = ["PO Date", "Dispatch Date"]
 COUNT_COLUMNS = ["Qty", "Action Qty"]
+MONEY_COLUMNS = ["Cost"]
 RISKS = ["High", "Medium", "Low"]
 PROGRAM_STATUSES = ["Completed", "Incomplete", "NA"]
 PLANNING_OPTIONS = [
@@ -219,6 +221,7 @@ def build_sample(today: date | None = None) -> pd.DataFrame:
                 "Completed Status": completed,
                 "RMA Status": "Yes" if index in rma_rows else "No",
                 "Is Aerospace Order": aerospace,
+                "Cost": float(qty * 25),
             }
         )
     return pd.DataFrame(rows, columns=EDITOR_COLUMNS)
@@ -259,8 +262,9 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
         if column not in out:
             continue
         out[column] = [_canonicalize(column, _clean_text(value)) for value in out[column]]
-    for column in COUNT_COLUMNS:
-        out[column] = pd.to_numeric(out[column], errors="coerce")
+    for column in COUNT_COLUMNS + MONEY_COLUMNS:
+        if column in out:
+            out[column] = pd.to_numeric(out[column], errors="coerce")
     for column in DATE_COLUMNS:
         out[column] = pd.to_datetime(out[column], errors="coerce")
     return out
@@ -285,6 +289,7 @@ def for_editor(df: pd.DataFrame) -> pd.DataFrame:
     ]
     out["Qty"] = pd.to_numeric(out["Qty"], errors="coerce").astype("float64")
     out["Action Qty"] = pd.to_numeric(out["Action Qty"], errors="coerce").fillna(0).astype("float64")
+    out["Cost"] = pd.to_numeric(out["Cost"], errors="coerce").fillna(0).astype("float64")
     for column in DATE_COLUMNS:
         out[column] = pd.to_datetime(out[column], errors="coerce")
     return out[EDITOR_COLUMNS]
@@ -348,6 +353,9 @@ def validate(df: pd.DataFrame) -> list[str]:
         errors.append(
             "RMA rows need a Review comment: " + ", ".join(missing_rma_review.tolist())
         )
+    cost_bad = out["Cost"].isna() | (out["Cost"] < 0)
+    if cost_bad.any():
+        errors.append("Cost must be zero or greater.")
 
     choices = {
         "Risk": RISKS,
@@ -380,8 +388,18 @@ def analysis_frame(df: pd.DataFrame, today: date | None = None) -> pd.DataFrame:
     return out
 
 
+def _with_cost(raw: pd.DataFrame) -> pd.DataFrame:
+    """Fill Cost for a workbook saved before that column existed."""
+    if "Cost" in raw.columns:
+        return raw
+    out = raw.copy()
+    qty = pd.to_numeric(out["Qty"], errors="coerce").fillna(0)
+    out["Cost"] = (qty * 25).round(2)
+    return out
+
+
 def load_orders(path: Path) -> pd.DataFrame:
-    raw = pd.read_excel(path, sheet_name=SHEET_NAME, engine="openpyxl")
+    raw = _with_cost(pd.read_excel(path, sheet_name=SHEET_NAME, engine="openpyxl"))
     missing = [column for column in EDITOR_COLUMNS if column not in raw.columns]
     if missing:
         raise ValueError(
@@ -392,6 +410,7 @@ def load_orders(path: Path) -> pd.DataFrame:
 
 
 def _write_sheet(export: pd.DataFrame) -> Workbook:
+    columns = list(export.columns)
     workbook = Workbook()
     workbook.properties.title = "Part Machining Orders"
     sheet = workbook.active
@@ -433,6 +452,7 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
         "Completed Status": 18,
         "RMA Status": 12,
         "Is Aerospace Order": 20,
+        "Cost": 12,
     }
     wrap_headers = {
         "Specification",
@@ -445,7 +465,7 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
         "Review",
         "Deviation",
     }
-    for column_index, name in enumerate(EDITOR_COLUMNS, start=1):
+    for column_index, name in enumerate(columns, start=1):
         cell = sheet.cell(1, column_index, name)
         cell.fill = header_fill
         cell.font = header_font
@@ -455,11 +475,11 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
 
     for row_index, record in enumerate(export.itertuples(index=False), start=2):
         values = list(record)
-        is_aerospace = values[EDITOR_COLUMNS.index("Is Aerospace Order")] == "Yes"
-        photo = values[EDITOR_COLUMNS.index("Part Photo")]
+        is_aerospace = values[columns.index("Is Aerospace Order")] == "Yes"
+        photo = values[columns.index("Part Photo")]
         sheet.row_dimensions[row_index].height = 36
         for column_index, value in enumerate(values, start=1):
-            header = EDITOR_COLUMNS[column_index - 1]
+            header = columns[column_index - 1]
             cell = sheet.cell(row_index, column_index, None if pd.isna(value) else value)
             cell.font = Font(name="Calibri", size=11)
             cell.border = thin
@@ -472,15 +492,17 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
                 cell.number_format = "YYYY-MM-DD"
             elif header in COUNT_COLUMNS:
                 cell.number_format = "#,##0"
+            elif header in MONEY_COLUMNS:
+                cell.number_format = "#,##0.00"
         photo_path = ROOT / str(photo)
         if photo_path.exists():
             image = XLImage(str(photo_path))
             image.width = 64
             image.height = 42
-            sheet.add_image(image, f"E{row_index}")
+            sheet.add_image(image, f"{get_column_letter(columns.index('Part Photo') + 1)}{row_index}")
 
     last_row = max(2, len(export) + 1)
-    last_column = get_column_letter(len(EDITOR_COLUMNS))
+    last_column = get_column_letter(len(columns))
     sheet.auto_filter.ref = f"A1:{last_column}{last_row}"
     sheet.freeze_panes = "A2"
     sheet.page_setup.orientation = "landscape"
@@ -491,16 +513,17 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
     return workbook
 
 
-def to_export_frame(df: pd.DataFrame) -> pd.DataFrame:
+def to_export_frame(df: pd.DataFrame, columns: list[str] | None = None) -> pd.DataFrame:
     errors = validate(df)
     if errors:
         raise ValueError("\n".join(errors))
     out = normalize(df)
     out["Qty"] = out["Qty"].round().astype(int)
     out["Action Qty"] = out["Action Qty"].round().astype(int)
+    out["Cost"] = out["Cost"].round(2)
     for column in DATE_COLUMNS:
         out[column] = [value.date() for value in out[column]]
-    return out[EDITOR_COLUMNS]
+    return out[columns or EDITOR_COLUMNS]
 
 
 def save_orders(df: pd.DataFrame, target: Path | BytesIO) -> None:
@@ -510,9 +533,10 @@ def save_orders(df: pd.DataFrame, target: Path | BytesIO) -> None:
     workbook.save(target)
 
 
-def workbook_bytes(df: pd.DataFrame) -> bytes:
+def workbook_bytes(df: pd.DataFrame, columns: list[str] | None = None) -> bytes:
     buffer = BytesIO()
-    save_orders(df, buffer)
+    workbook = _write_sheet(to_export_frame(df, columns))
+    workbook.save(buffer)
     return buffer.getvalue()
 
 
@@ -527,8 +551,16 @@ def _schema_mismatch(path: Path) -> bool:
 
 
 def ensure_workbook(path: Path = DEFAULT_WORKBOOK) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     if _schema_mismatch(path):
         save_orders(build_sample(), path)
+        return path
+    columns = pd.read_excel(path, sheet_name=SHEET_NAME, nrows=0, engine="openpyxl").columns
+    if "Cost" not in columns:
+        try:
+            save_orders(load_orders(path), path)
+        except (ValueError, PermissionError):
+            pass
     return path
 
 

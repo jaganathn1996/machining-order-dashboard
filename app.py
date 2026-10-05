@@ -8,7 +8,24 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from brand import COMPANY_NAME, LOGO_PATH, TAGLINE, USERS, ensure_logo
+from access import (
+    GROUPS,
+    add_user,
+    authenticate,
+    can_edit,
+    can_view,
+    delete_user,
+    editable_columns,
+    ensure_users,
+    group_label,
+    SEED_USERS,
+    list_users,
+    merge_edits,
+    rights_rows,
+    update_user,
+    visible_columns,
+)
+from brand import COMPANY_NAME, LOGO_PATH, TAGLINE, ensure_logo
 from parts import photo_data_uri
 from workbook import (
     COMPLETED_COLORS,
@@ -62,6 +79,7 @@ SUMMARY_COLUMNS = [
 
 
 def init_state() -> None:
+    ensure_users()
     ensure_workbook(DEFAULT_WORKBOOK)
     if "editor_version" not in st.session_state:
         st.session_state.editor_version = 0
@@ -69,9 +87,6 @@ def init_state() -> None:
         st.session_state.page = "Dashboard"
     if "customer" not in st.session_state:
         st.session_state.customer = None
-    if st.session_state.get("authenticated") and "role" not in st.session_state:
-        st.session_state.role = "planner"
-        st.session_state.username = "admin"
     current = st.session_state.get("orders")
     missing = current is None or any(column not in getattr(current, "columns", []) for column in EDITOR_COLUMNS)
     if missing:
@@ -79,8 +94,8 @@ def init_state() -> None:
         st.session_state.editor_version += 1
 
 
-def is_elevated() -> bool:
-    return st.session_state.get("role") == "elevated"
+def current_group() -> str:
+    return st.session_state.get("group", "")
 
 
 def brand_lockup(compact: bool = False) -> None:
@@ -115,27 +130,50 @@ def login_page() -> None:
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in", type="primary", width="stretch")
-    st.caption("Leave both fields blank to sign in, or use admin / machining.")
-    st.caption("Elevated user, can set Completed Status: lead / precision")
+    with st.expander("Demo accounts"):
+        st.caption("Username and password are the same word for each department.")
+        st.markdown(
+            "\n".join(
+                f"- `{user['username']}` · {group_label(user['group'])}"
+                for user in SEED_USERS
+            )
+        )
     if submitted:
         username = username.strip()
-        if username == "" and password == "":
-            st.session_state.authenticated = True
-            st.session_state.username = "guest"
-            st.session_state.role = "planner"
-            st.rerun()
-        record = USERS.get(username)
-        if record and password == record["password"]:
-            st.session_state.authenticated = True
-            st.session_state.username = username
-            st.session_state.role = record["role"]
-            st.rerun()
+        if username == "" or password == "":
+            st.error("Enter a username and password.")
         else:
-            st.error("Unknown username or password.")
+            record = authenticate(username, password)
+            if record:
+                st.session_state.authenticated = True
+                st.session_state.username = record["username"]
+                st.session_state.display_name = record["name"]
+                st.session_state.group = record["group"]
+                st.session_state.page = "Dashboard"
+                st.session_state.orders = None
+                st.rerun()
+            else:
+                st.error("Unknown username or password.")
 
 
 def ready_orders(orders: pd.DataFrame) -> pd.DataFrame:
     return analysis_frame(orders, date.today())
+
+
+def visible_orders(orders: pd.DataFrame) -> pd.DataFrame:
+    frame = ready_orders(orders)
+    hidden = [
+        column
+        for column in frame.columns
+        if column in EDITOR_COLUMNS and not can_view_column(column)
+    ]
+    if hidden:
+        frame = frame.drop(columns=hidden)
+    return frame
+
+
+def can_view_column(column: str) -> bool:
+    return can_view(current_group(), column)
 
 
 def filter_search(frame: pd.DataFrame, query: str) -> pd.DataFrame:
@@ -195,56 +233,80 @@ def present(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     return view[columns]
 
 
-def column_config(elevated: bool, images: bool) -> dict:
-    photo = (
-        st.column_config.ImageColumn("Part Photo", help="Part picture", width="small")
-        if images
-        else st.column_config.TextColumn(
+def column_config(group: str, images: bool) -> dict:
+    def locked(column: str) -> bool:
+        return not can_edit(group, column)
+
+    if images:
+        photo = st.column_config.ImageColumn("Part Photo", help="Part picture", width="small")
+    else:
+        photo = st.column_config.TextColumn(
             "Part Photo",
             help="Picture file kept with the row. The image shows when editing is off.",
-            disabled=True,
+            disabled=locked("Part Photo"),
             width="medium",
         )
-    )
     return {
-        "APM NO": st.column_config.TextColumn(width="small"),
-        "PO Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
-        "PO Number": st.column_config.TextColumn(width="small"),
-        "Part Number": st.column_config.TextColumn(width="small"),
+        "APM NO": st.column_config.TextColumn(width="small", disabled=locked("APM NO")),
+        "PO Date": st.column_config.DateColumn(format="YYYY-MM-DD", disabled=locked("PO Date")),
+        "PO Number": st.column_config.TextColumn(width="small", disabled=locked("PO Number")),
+        "Part Number": st.column_config.TextColumn(width="small", disabled=locked("Part Number")),
         "Part Photo": photo,
-        "Qty": st.column_config.NumberColumn(min_value=1, step=1, format="%d"),
-        "Dispatch Date": st.column_config.DateColumn(format="YYYY-MM-DD"),
-        "Specification": st.column_config.TextColumn(width="large"),
-        "Risk": st.column_config.SelectboxColumn(options=RISKS, default="Medium", required=True),
-        "RM Size": st.column_config.TextColumn(width="medium"),
-        "Action Qty": st.column_config.NumberColumn(min_value=0, step=1, format="%d", default=0),
-        "RM Status": st.column_config.TextColumn(width="large"),
-        "Process": st.column_config.TextColumn(width="large"),
-        "Tools & Accessories": st.column_config.TextColumn(width="medium"),
-        "Special Process & Instruments": st.column_config.TextColumn(width="medium"),
-        "Inserts": st.column_config.TextColumn(width="small"),
-        "Enquiry": st.column_config.TextColumn(width="large"),
+        "Qty": st.column_config.NumberColumn(min_value=1, step=1, format="%d", disabled=locked("Qty")),
+        "Dispatch Date": st.column_config.DateColumn(format="YYYY-MM-DD", disabled=locked("Dispatch Date")),
+        "Specification": st.column_config.TextColumn(width="large", disabled=locked("Specification")),
+        "Risk": st.column_config.SelectboxColumn(
+            options=RISKS, default="Medium", required=True, disabled=locked("Risk")
+        ),
+        "RM Size": st.column_config.TextColumn(width="medium", disabled=locked("RM Size")),
+        "Action Qty": st.column_config.NumberColumn(
+            min_value=0, step=1, format="%d", default=0, disabled=locked("Action Qty")
+        ),
+        "RM Status": st.column_config.TextColumn(width="large", disabled=locked("RM Status")),
+        "Process": st.column_config.TextColumn(width="large", disabled=locked("Process")),
+        "Tools & Accessories": st.column_config.TextColumn(
+            width="medium", disabled=locked("Tools & Accessories")
+        ),
+        "Special Process & Instruments": st.column_config.TextColumn(
+            width="medium", disabled=locked("Special Process & Instruments")
+        ),
+        "Inserts": st.column_config.TextColumn(width="small", disabled=locked("Inserts")),
+        "Enquiry": st.column_config.TextColumn(width="large", disabled=locked("Enquiry")),
         "Program Status": st.column_config.SelectboxColumn(
-            options=PROGRAM_STATUSES, default="Incomplete", required=True
+            options=PROGRAM_STATUSES,
+            default="Incomplete",
+            required=True,
+            disabled=locked("Program Status"),
         ),
         "Planning": st.column_config.TextColumn(
             width="large",
+            disabled=locked("Planning"),
             help="Free text, for example In-house, Turning out, or Milling in-house completed.",
         ),
-        "Machining Status": st.column_config.TextColumn(width="large"),
-        "Review": st.column_config.TextColumn(width="large"),
-        "Deviation": st.column_config.TextColumn(width="large"),
-        "Customer": st.column_config.TextColumn(),
+        "Machining Status": st.column_config.TextColumn(width="large", disabled=locked("Machining Status")),
+        "Review": st.column_config.TextColumn(width="large", disabled=locked("Review")),
+        "Deviation": st.column_config.TextColumn(width="large", disabled=locked("Deviation")),
+        "Customer": st.column_config.TextColumn(disabled=locked("Customer")),
         "Completed Status": st.column_config.SelectboxColumn(
             options=COMPLETED_STATUSES,
             default="Not started",
             required=True,
-            disabled=not elevated,
-            help="Only an elevated user can change the completion status.",
+            disabled=locked("Completed Status"),
+            help="Only Admin can change the completion status.",
         ),
-        "RMA Status": st.column_config.SelectboxColumn(options=YES_NO, default="No", required=True),
+        "RMA Status": st.column_config.SelectboxColumn(
+            options=YES_NO, default="No", required=True, disabled=locked("RMA Status")
+        ),
         "Is Aerospace Order": st.column_config.SelectboxColumn(
-            options=YES_NO, default="No", required=True
+            options=YES_NO, default="No", required=True, disabled=locked("Is Aerospace Order")
+        ),
+        "Cost": st.column_config.NumberColumn(
+            min_value=0,
+            step=0.01,
+            format="%.2f",
+            default=0,
+            disabled=locked("Cost"),
+            help="Visible to Admin only.",
         ),
     }
 
@@ -253,6 +315,7 @@ def show_orders(frame: pd.DataFrame, columns: list[str], empty: str) -> None:
     if frame.empty:
         st.info(empty)
         return
+    columns = [column for column in columns if column in frame.columns and can_view_column(column)]
     view = present(frame, columns)
     st.dataframe(
         style_orders(view),
@@ -260,12 +323,12 @@ def show_orders(frame: pd.DataFrame, columns: list[str], empty: str) -> None:
         width="stretch",
         height=640,
         row_height=72,
-        column_config=column_config(True, images=True),
+        column_config=column_config(current_group(), images=True),
     )
 
 
 def dashboard(orders: pd.DataFrame) -> None:
-    frame = ready_orders(orders)
+    frame = visible_orders(orders)
     if frame.empty:
         st.info("Add a complete order on the master table to see the dashboard.")
         return
@@ -369,53 +432,35 @@ def dashboard(orders: pd.DataFrame) -> None:
     )
 
 
-def lock_completed_status(edited: pd.DataFrame, previous: pd.DataFrame) -> pd.DataFrame:
-    """Keep completion status unchanged for a planner, including when the APM number is edited."""
-    locked = edited.copy()
-    previous_status = list(previous["Completed Status"])
-    if len(edited) == len(previous):
-        locked["Completed Status"] = previous_status
-        return locked
-    by_apm = {
-        str(apm).strip(): status
-        for apm, status in zip(previous["APM NO"], previous["Completed Status"])
-        if str(apm).strip()
-    }
-    locked["Completed Status"] = [
-        by_apm.get(str(apm).strip(), "Not started") for apm in edited["APM NO"]
-    ]
-    return locked
-
-
 def editor_page(orders: pd.DataFrame) -> None:
+    group = current_group()
+    editable = editable_columns(group)
+    shown = visible_columns(group)
     st.caption(
         "Dropdowns: Risk, Program Status, Completed Status, RMA Status, and Is Aerospace Order. "
-        "Planning, process, materials, enquiry, machining, review, and deviation are free text. "
         "Aerospace rows are light blue in the view. "
-        "Only an elevated user can change Completed Status."
+        f"{group_label(group)} can edit: {', '.join(editable)}."
     )
     editing = st.toggle("Edit master table", key="edit_master")
     if editing:
         edited = st.data_editor(
-            for_editor(orders),
-            num_rows="dynamic",
+            for_editor(orders)[shown],
+            num_rows="dynamic" if group == "Admin" else "fixed",
             hide_index=True,
             width="stretch",
             height=640,
             row_height=48,
-            key=f"orders_editor_{st.session_state.editor_version}",
-            column_order=EDITOR_COLUMNS,
-            column_config=column_config(is_elevated(), images=False),
+            key=f"orders_editor_{st.session_state.username}_{st.session_state.editor_version}",
+            column_order=shown,
+            column_config=column_config(group, images=False),
         )
-        if not is_elevated():
-            edited = lock_completed_status(edited, orders)
-        st.session_state.orders = for_editor(edited)
+        st.session_state.orders = for_editor(merge_edits(edited, orders, group))
     else:
-        visible = ready_orders(orders)
+        visible = visible_orders(orders)
         found = apply_search(visible, "search_master")
         if found is not None:
-            show_orders(found, TABLE_COLUMNS, "No orders in the workbook.")
-        st.caption("Search filters this view. Saving still writes every order.")
+            show_orders(found, shown, "No orders in the workbook.")
+        st.caption("Search filters this view. Saving still writes every order, and locked columns stay unchanged.")
 
     current = st.session_state.orders
     issues = validate(current)
@@ -438,11 +483,13 @@ def editor_page(orders: pd.DataFrame) -> None:
     else:
         download.download_button(
             "Download Excel",
-            data=workbook_bytes(current),
+            data=workbook_bytes(current, visible_columns(current_group())),
             file_name="part_machining_orders.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
+        if "Cost" not in visible_columns(current_group()):
+            download.caption("Cost is left out of this download.")
     if reload.button("Reload from disk", width="stretch"):
         st.session_state.orders = load_orders(DEFAULT_WORKBOOK)
         st.session_state.editor_version += 1
@@ -450,7 +497,7 @@ def editor_page(orders: pd.DataFrame) -> None:
 
 
 def customer_page(orders: pd.DataFrame, customer: str) -> None:
-    frame = ready_orders(orders)
+    frame = visible_orders(orders)
     frame = frame[frame["Customer"] == customer]
     metrics = st.columns(4)
     metrics[0].metric("Orders", f"{len(frame):,}")
@@ -462,9 +509,82 @@ def customer_page(orders: pd.DataFrame, customer: str) -> None:
         show_orders(found.sort_values("Dispatch Date"), TABLE_COLUMNS, f"No orders for {customer}.")
 
 
+def users_page() -> None:
+    st.subheader("Users")
+    st.caption("Each person belongs to one department. Column rights follow that department.")
+    records = list_users()
+    st.dataframe(
+        pd.DataFrame(records).rename(columns={"username": "Username", "name": "Name", "group": "Group"}),
+        hide_index=True,
+        width="stretch",
+    )
+    with st.expander("Column access"):
+        st.dataframe(pd.DataFrame(rights_rows()), hide_index=True, width="stretch")
+
+    st.subheader("Add user")
+    with st.form("add_user"):
+        left, right = st.columns(2)
+        username = left.text_input("Username")
+        name = right.text_input("Name")
+        left, right = st.columns(2)
+        password = left.text_input("Password", type="password")
+        group = right.selectbox("Group", GROUPS, format_func=group_label)
+        if st.form_submit_button("Add user", type="primary"):
+            try:
+                add_user(username, name, password, group)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                st.success(f"Added {username.strip()}.")
+                st.rerun()
+
+    st.subheader("Update user")
+    selected = st.selectbox("User", [record["username"] for record in records])
+    record = next(item for item in records if item["username"] == selected)
+    with st.form(f"edit_user_{selected}"):
+        left, right = st.columns(2)
+        name = left.text_input("Name", value=record["name"], key=f"edit_name_{selected}")
+        group = right.selectbox(
+            "Group",
+            GROUPS,
+            index=GROUPS.index(record["group"]),
+            format_func=group_label,
+            key=f"edit_group_{selected}",
+        )
+        password = st.text_input(
+            "New password",
+            type="password",
+            key=f"edit_password_{selected}",
+            help="Leave blank to keep the current password.",
+        )
+        if st.form_submit_button("Save user", type="primary"):
+            try:
+                updated = update_user(selected, name=name, group=group, password=password)
+            except ValueError as exc:
+                st.error(str(exc))
+            else:
+                if selected == st.session_state.get("username"):
+                    st.session_state.display_name = updated["name"]
+                    st.session_state.group = updated["group"]
+                st.success(f"Updated {selected}.")
+                st.rerun()
+    confirm = st.checkbox(f"Delete {selected}", key=f"confirm_delete_{selected}")
+    if st.button("Delete user", disabled=not confirm):
+        try:
+            delete_user(selected, actor=st.session_state.get("username", ""))
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            st.success(f"Deleted {selected}.")
+            st.rerun()
+
+
 def render_page(orders: pd.DataFrame) -> None:
     page = st.session_state.page
-    frame = ready_orders(orders)
+    if page == "Users" and current_group() != "Admin":
+        st.session_state.page = "Dashboard"
+        st.rerun()
+    frame = visible_orders(orders)
     if page == "Master table":
         st.subheader("Master table")
         editor_page(orders)
@@ -491,7 +611,7 @@ def render_page(orders: pd.DataFrame) -> None:
         return
     if page == "All closed":
         st.subheader("All closed")
-        st.caption("View only. Orders marked Completed by an elevated user.")
+        st.caption("View only. Orders whose completed status is Completed.")
         closed = frame[frame["Completed Status"] == "Completed"].sort_values("PO Date", ascending=False)
         found = apply_search(closed, "search_closed")
         if found is not None:
@@ -505,6 +625,9 @@ def render_page(orders: pd.DataFrame) -> None:
         if found is not None:
             show_orders(found, TABLE_COLUMNS, "No customer RMA orders.")
         return
+    if page == "Users":
+        users_page()
+        return
     if page == "Customer":
         customer = st.session_state.customer
         st.subheader(customer or "Customer")
@@ -516,10 +639,13 @@ def render_page(orders: pd.DataFrame) -> None:
 def sidebar(orders: pd.DataFrame) -> None:
     with st.sidebar:
         brand_lockup(compact=True)
-        title = USERS.get(st.session_state.get("username", ""), {}).get("title", "Planner")
-        st.caption(f"Signed in as {st.session_state.get('username', '')} · {title}")
+        name = st.session_state.get("display_name") or st.session_state.get("username", "")
+        st.caption(f"Signed in as {name} · {group_label(current_group())}")
         st.markdown("**Menu**")
-        for name in MENU:
+        menu = list(MENU)
+        if current_group() == "Admin":
+            menu.insert(2, "Users")
+        for name in menu:
             selected = st.session_state.page == name
             if st.button(
                 name,
@@ -556,11 +682,16 @@ def sidebar(orders: pd.DataFrame) -> None:
         st.divider()
         if st.button("Sign out", width="stretch"):
             st.session_state.authenticated = False
+            st.session_state.group = ""
+            st.session_state.orders = None
+            st.session_state.editor_version = st.session_state.get("editor_version", 0) + 1
             st.rerun()
 
 
 def main() -> None:
-    if not st.session_state.get("authenticated"):
+    ensure_users()
+    if not st.session_state.get("authenticated") or not st.session_state.get("group"):
+        st.session_state.authenticated = False
         login_page()
         return
     init_state()

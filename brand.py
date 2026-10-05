@@ -9,18 +9,6 @@ from PIL import Image, ImageDraw
 
 COMPANY_NAME = "Helix Precision"
 TAGLINE = "Part manufacturing"
-DEMO_USERNAME = "admin"
-DEMO_PASSWORD = "machining"
-ELEVATED_USERNAME = "lead"
-ELEVATED_PASSWORD = "precision"
-USERS = {
-    DEMO_USERNAME: {"password": DEMO_PASSWORD, "role": "planner", "title": "Planner"},
-    ELEVATED_USERNAME: {
-        "password": ELEVATED_PASSWORD,
-        "role": "elevated",
-        "title": "Elevated",
-    },
-}
 
 ROOT = Path(__file__).resolve().parent
 LOGO_PATH = ROOT / "assets" / "logo.png"
