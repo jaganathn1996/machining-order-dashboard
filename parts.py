@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -193,5 +194,9 @@ def photo_data_uri(relative: str) -> str:
     path = ROOT / relative
     if not path.exists():
         return ""
-    encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+    image = Image.open(path).convert("RGBA")
+    image.thumbnail((110, 60), Image.Resampling.LANCZOS)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return f"data:image/png;base64,{encoded}"

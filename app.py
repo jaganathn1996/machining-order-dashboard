@@ -238,7 +238,7 @@ def column_config(group: str, images: bool) -> dict:
         return not can_edit(group, column)
 
     if images:
-        photo = st.column_config.ImageColumn("Part Photo", help="Part picture", width="small")
+        photo = st.column_config.ImageColumn("Part Photo", help="Part picture", width=120)
     else:
         photo = st.column_config.TextColumn(
             "Part Photo",
@@ -247,10 +247,10 @@ def column_config(group: str, images: bool) -> dict:
             width="medium",
         )
     return {
-        "APM NO": st.column_config.TextColumn(width="small", disabled=locked("APM NO")),
-        "PO Date": st.column_config.DateColumn(format="YYYY-MM-DD", disabled=locked("PO Date")),
-        "PO Number": st.column_config.TextColumn(width="small", disabled=locked("PO Number")),
-        "Part Number": st.column_config.TextColumn(width="small", disabled=locked("Part Number")),
+        "APM NO": st.column_config.TextColumn(width=120, disabled=locked("APM NO")),
+        "PO Date": st.column_config.DateColumn(format="YYYY-MM-DD", disabled=locked("PO Date"), width=120),
+        "PO Number": st.column_config.TextColumn(width=120, disabled=locked("PO Number")),
+        "Part Number": st.column_config.TextColumn(width=120, disabled=locked("Part Number")),
         "Part Photo": photo,
         "Qty": st.column_config.NumberColumn(min_value=1, step=1, format="%d", disabled=locked("Qty")),
         "Dispatch Date": st.column_config.DateColumn(format="YYYY-MM-DD", disabled=locked("Dispatch Date")),
@@ -322,7 +322,7 @@ def show_orders(frame: pd.DataFrame, columns: list[str], empty: str) -> None:
         hide_index=True,
         width="stretch",
         height=640,
-        row_height=72,
+        row_height=68,
         column_config=column_config(current_group(), images=True),
     )
 
