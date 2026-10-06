@@ -187,6 +187,20 @@ def ensure_part_photos() -> None:
         image.save(path)
 
 
+def png_bytes(relative: str, size: tuple[int, int] = (64, 42)) -> bytes:
+    """Small PNG for an Excel cell. Empty when the picture file is missing."""
+    if not relative:
+        return b""
+    path = ROOT / str(relative)
+    if not path.is_file():
+        return b""
+    image = Image.open(path).convert("RGBA")
+    image.thumbnail(size, Image.Resampling.LANCZOS)
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 @lru_cache(maxsize=32)
 def photo_data_uri(relative: str) -> str:
     if not relative:

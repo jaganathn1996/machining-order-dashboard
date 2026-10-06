@@ -481,15 +481,21 @@ def editor_page(orders: pd.DataFrame) -> None:
     if issues:
         download.caption("Download is available after the rows pass validation.")
     else:
-        download.download_button(
-            "Download Excel",
-            data=workbook_bytes(current, visible_columns(current_group())),
-            file_name="part_machining_orders.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            width="stretch",
-        )
-        if "Cost" not in visible_columns(current_group()):
-            download.caption("Cost is left out of this download.")
+        shown_download = visible_columns(current_group())
+        try:
+            payload = workbook_bytes(current, shown_download)
+        except Exception as exc:
+            download.error(f"Could not prepare the Excel file: {exc}")
+        else:
+            download.download_button(
+                "Download Excel",
+                data=payload,
+                file_name="part_machining_orders.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
+            if "Cost" not in shown_download:
+                download.caption("Cost is left out of this download.")
     if reload.button("Reload from disk", width="stretch"):
         st.session_state.orders = load_orders(DEFAULT_WORKBOOK)
         st.session_state.editor_version += 1

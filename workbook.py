@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 
@@ -12,7 +12,7 @@ from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from parts import PARTS, ensure_part_photos
+from parts import PARTS, ensure_part_photos, png_bytes
 
 PHOTO_BY_PART = {part["number"]: part["file"] for part in PARTS}
 
@@ -409,6 +409,52 @@ def load_orders(path: Path) -> pd.DataFrame:
     return for_editor(raw)
 
 
+def _excel_value(header: str, value: object) -> object:
+    """Plain Python values. openpyxl rejects several pandas and numpy types."""
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if header in DATE_COLUMNS:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        parsed = pd.to_datetime(value, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.date()
+    if header in COUNT_COLUMNS:
+        return int(round(float(value)))
+    if header in MONEY_COLUMNS:
+        return round(float(value), 2)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (int, float)):
+        return value
+    return str(value)
+
+
+def _add_png(sheet, png: bytes, anchor: str) -> None:
+    """Embed a PNG without reopening the source file.
+
+    Several orders share one picture. openpyxl closes that file the first time
+    it reads it, and the next row then fails while the workbook is saved.
+    """
+    if not png:
+        return
+    picture = XLImage(BytesIO(png))
+    picture.width = 64
+    picture.height = 42
+    picture._data = lambda payload=png: payload
+    sheet.add_image(picture, anchor)
+
+
 def _write_sheet(export: pd.DataFrame) -> Workbook:
     columns = list(export.columns)
     workbook = Workbook()
@@ -473,14 +519,16 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
         sheet.column_dimensions[get_column_letter(column_index)].width = widths[name]
     sheet.row_dimensions[1].height = 30
 
-    for row_index, record in enumerate(export.itertuples(index=False), start=2):
+    photo_column = columns.index("Part Photo") + 1 if "Part Photo" in columns else None
+    aerospace_column = columns.index("Is Aerospace Order") if "Is Aerospace Order" in columns else None
+    # Plain tuples. Named tuples reject headers such as "APM NO".
+    for row_index, record in enumerate(export.itertuples(index=False, name=None), start=2):
         values = list(record)
-        is_aerospace = values[columns.index("Is Aerospace Order")] == "Yes"
-        photo = values[columns.index("Part Photo")]
+        is_aerospace = aerospace_column is not None and values[aerospace_column] == "Yes"
         sheet.row_dimensions[row_index].height = 36
         for column_index, value in enumerate(values, start=1):
             header = columns[column_index - 1]
-            cell = sheet.cell(row_index, column_index, None if pd.isna(value) else value)
+            cell = sheet.cell(row_index, column_index, _excel_value(header, value))
             cell.font = Font(name="Calibri", size=11)
             cell.border = thin
             cell.alignment = Alignment(vertical="center", wrap_text=header in wrap_headers)
@@ -494,12 +542,8 @@ def _write_sheet(export: pd.DataFrame) -> Workbook:
                 cell.number_format = "#,##0"
             elif header in MONEY_COLUMNS:
                 cell.number_format = "#,##0.00"
-        photo_path = ROOT / str(photo)
-        if photo_path.exists():
-            image = XLImage(str(photo_path))
-            image.width = 64
-            image.height = 42
-            sheet.add_image(image, f"{get_column_letter(columns.index('Part Photo') + 1)}{row_index}")
+        if photo_column is not None:
+            _add_png(sheet, png_bytes(str(values[photo_column - 1])), f"{get_column_letter(photo_column)}{row_index}")
 
     last_row = max(2, len(export) + 1)
     last_column = get_column_letter(len(columns))
@@ -518,11 +562,12 @@ def to_export_frame(df: pd.DataFrame, columns: list[str] | None = None) -> pd.Da
     if errors:
         raise ValueError("\n".join(errors))
     out = normalize(df)
-    out["Qty"] = out["Qty"].round().astype(int)
-    out["Action Qty"] = out["Action Qty"].round().astype(int)
-    out["Cost"] = out["Cost"].round(2)
+    out["Qty"] = pd.to_numeric(out["Qty"], errors="coerce").round()
+    out["Action Qty"] = pd.to_numeric(out["Action Qty"], errors="coerce").round()
+    out["Cost"] = pd.to_numeric(out["Cost"], errors="coerce").round(2)
     for column in DATE_COLUMNS:
-        out[column] = [value.date() for value in out[column]]
+        parsed = pd.to_datetime(out[column], errors="coerce")
+        out[column] = [None if pd.isna(value) else value.date() for value in parsed]
     return out[columns or EDITOR_COLUMNS]
 
 
