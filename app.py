@@ -18,7 +18,6 @@ from access import (
     editable_columns,
     ensure_users,
     group_label,
-    SEED_USERS,
     list_users,
     merge_edits,
     rights_rows,
@@ -39,11 +38,10 @@ from workbook import (
     analysis_frame,
     ensure_workbook,
     for_editor,
-    load_orders,
-    save_orders,
     validate,
     workbook_bytes,
 )
+from neon_store import load_order_frame, save_order_frame
 
 ensure_logo()
 st.set_page_config(
@@ -90,7 +88,7 @@ def init_state() -> None:
     current = st.session_state.get("orders")
     missing = current is None or any(column not in getattr(current, "columns", []) for column in EDITOR_COLUMNS)
     if missing:
-        st.session_state.orders = load_orders(DEFAULT_WORKBOOK)
+        st.session_state.orders = load_order_frame()
         st.session_state.editor_version += 1
 
 
@@ -130,14 +128,8 @@ def login_page() -> None:
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Sign in", type="primary", width="stretch")
-    with st.expander("Demo accounts"):
-        st.caption("Username and password are the same word for each department.")
-        st.markdown(
-            "\n".join(
-                f"- `{user['username']}` · {group_label(user['group'])}"
-                for user in SEED_USERS
-            )
-        )
+    with st.expander("Sign in"):
+        st.caption("Use the admin account stored in Neon. Department users are added from the Users page.")
     if submitted:
         username = username.strip()
         if username == "" or password == "":
@@ -471,11 +463,11 @@ def editor_page(orders: pd.DataFrame) -> None:
     save, download, reload = st.columns(3)
     if save.button("Save workbook", type="primary", width="stretch"):
         try:
-            save_orders(current, DEFAULT_WORKBOOK)
+            save_order_frame(current)
         except ValueError as exc:
             st.error(str(exc))
-        except PermissionError:
-            st.error("Close the file in Excel, then save again.")
+        except Exception:
+            st.error("Could not save orders to the database.")
         else:
             st.success(f"Saved {len(current)} orders.")
     if issues:
@@ -496,8 +488,8 @@ def editor_page(orders: pd.DataFrame) -> None:
             )
             if "Cost" not in shown_download:
                 download.caption("Cost is left out of this download.")
-    if reload.button("Reload from disk", width="stretch"):
-        st.session_state.orders = load_orders(DEFAULT_WORKBOOK)
+    if reload.button("Reload", width="stretch"):
+        st.session_state.orders = load_order_frame()
         st.session_state.editor_version += 1
         st.rerun()
 

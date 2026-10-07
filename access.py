@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from neon_store import connect, fetch_users, password_hash, password_matches
 from workbook import EDITOR_COLUMNS
 
 GROUPS = [
@@ -151,21 +152,19 @@ def merge_edits(edited: pd.DataFrame, previous: pd.DataFrame, group: str) -> pd.
 
 
 def ensure_users(path: Path = USERS_PATH) -> list[dict]:
-    if not path.exists():
-        _write_users(SEED_USERS, path)
-    return _read_users(path)
+    return list_users()
 
 
 def list_users(path: Path = USERS_PATH) -> list[dict]:
     order = {group: index for index, group in enumerate(GROUPS)}
-    public = [_public(user) for user in ensure_users(path)]
+    public = [_public(user) for user in fetch_users()]
     return sorted(public, key=lambda user: (order.get(user["group"], 99), user["username"]))
 
 
 def authenticate(username: str, password: str, path: Path = USERS_PATH) -> dict | None:
     username = username.strip()
-    for user in ensure_users(path):
-        if user["username"] == username and user["password"] == password:
+    for user in fetch_users():
+        if user["username"] == username and password_matches(password, user["password_hash"]):
             return _public(user)
     return None
 
@@ -180,18 +179,25 @@ def add_user(
     username = _clean_username(username)
     password = _clean_password(password, required=True)
     group = _clean_group(group)
-    users = ensure_users(path)
+    users = fetch_users()
     if any(user["username"].casefold() == username.casefold() for user in users):
         raise ValueError(f"{username} already exists.")
     record = {
         "username": username,
-        "password": password,
-        "group": group,
         "name": _clean_name(name, username),
+        "group": group,
     }
-    users.append(record)
-    _write_users(users, path)
-    return _public(record)
+    with connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO users (username, password_hash, display_name, department)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (record["username"], password_hash(password), record["name"], record["group"]),
+            )
+        connection.commit()
+    return record
 
 
 def update_user(
@@ -202,27 +208,48 @@ def update_user(
     password: str = "",
     path: Path = USERS_PATH,
 ) -> dict:
-    users = ensure_users(path)
+    users = fetch_users()
     record = _find(users, username)
     group = _clean_group(group)
     _keep_an_admin(users, record, group)
     record["name"] = _clean_name(name, record["username"])
     record["group"] = group
-    if password != "":
-        record["password"] = _clean_password(password, required=True)
-    _write_users(users, path)
+    with connect() as connection:
+        with connection.cursor() as cursor:
+            if password != "":
+                password = _clean_password(password, required=True)
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET display_name = %s, department = %s, password_hash = %s
+                    WHERE username = %s
+                    """,
+                    (record["name"], record["group"], password_hash(password), record["username"]),
+                )
+            else:
+                cursor.execute(
+                    """
+                    UPDATE users
+                    SET display_name = %s, department = %s
+                    WHERE username = %s
+                    """,
+                    (record["name"], record["group"], record["username"]),
+                )
+        connection.commit()
     return _public(record)
 
 
 def delete_user(username: str, *, actor: str, path: Path = USERS_PATH) -> None:
-    users = ensure_users(path)
+    users = fetch_users()
     record = _find(users, username)
     if record["username"] == actor:
         raise ValueError("You cannot delete the account you are signed in with.")
     if record["group"] == "Admin" and _admin_count(users) <= 1:
         raise ValueError("Keep at least one Admin user.")
-    kept = [user for user in users if user["username"] != record["username"]]
-    _write_users(kept, path)
+    with connect() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute("DELETE FROM users WHERE username = %s", (record["username"],))
+        connection.commit()
 
 
 def _public(user: dict) -> dict:

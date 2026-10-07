@@ -283,7 +283,7 @@ def for_editor(df: pd.DataFrame) -> pd.DataFrame:
         out[column] = [value if value else default for value in out[column]]
     out["Part Photo"] = [
         photo
-        if photo.startswith("assets/")
+        if photo.startswith("assets/") or photo.startswith("parts/")
         else PHOTO_BY_PART.get(part_number, "")
         for photo, part_number in zip(out["Part Photo"], out["Part Number"])
     ]

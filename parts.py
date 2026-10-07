@@ -187,14 +187,26 @@ def ensure_part_photos() -> None:
         image.save(path)
 
 
-def png_bytes(relative: str, size: tuple[int, int] = (64, 42)) -> bytes:
-    """Small PNG for an Excel cell. Empty when the picture file is missing."""
+def _picture_bytes(relative: str) -> bytes:
     if not relative:
         return b""
     path = ROOT / str(relative)
-    if not path.is_file():
+    if path.is_file():
+        return path.read_bytes()
+    local = ROOT / "assets" / "parts" / Path(str(relative)).name
+    if local.is_file():
+        return local.read_bytes()
+    from neon_store import bucket_bytes, storage_key
+
+    return bucket_bytes(storage_key(relative))
+
+
+def png_bytes(relative: str, size: tuple[int, int] = (64, 42)) -> bytes:
+    """Small PNG for an Excel cell. Empty when the picture file is missing."""
+    raw = _picture_bytes(relative)
+    if not raw:
         return b""
-    image = Image.open(path).convert("RGBA")
+    image = Image.open(BytesIO(raw)).convert("RGBA")
     image.thumbnail(size, Image.Resampling.LANCZOS)
     buffer = BytesIO()
     image.save(buffer, format="PNG")
@@ -205,10 +217,10 @@ def png_bytes(relative: str, size: tuple[int, int] = (64, 42)) -> bytes:
 def photo_data_uri(relative: str) -> str:
     if not relative:
         return ""
-    path = ROOT / relative
-    if not path.exists():
+    raw = _picture_bytes(relative)
+    if not raw:
         return ""
-    image = Image.open(path).convert("RGBA")
+    image = Image.open(BytesIO(raw)).convert("RGBA")
     image.thumbnail((110, 60), Image.Resampling.LANCZOS)
     buffer = BytesIO()
     image.save(buffer, format="PNG")
